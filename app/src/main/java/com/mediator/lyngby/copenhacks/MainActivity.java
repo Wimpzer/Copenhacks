@@ -1,7 +1,14 @@
 package com.mediator.lyngby.copenhacks;
 
+import android.Manifest;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
+import android.content.pm.PackageManager;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.support.v4.app.ActivityCompat;
+import android.support.v4.content.ContextCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
@@ -11,19 +18,29 @@ import android.widget.Button;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import com.choosemuse.libmuse.AnnotationData;
 import com.choosemuse.libmuse.ConnectionState;
 import com.choosemuse.libmuse.Eeg;
+import com.choosemuse.libmuse.LibmuseVersion;
+import com.choosemuse.libmuse.MessageType;
 import com.choosemuse.libmuse.Muse;
 import com.choosemuse.libmuse.MuseArtifactPacket;
+import com.choosemuse.libmuse.MuseConfiguration;
 import com.choosemuse.libmuse.MuseConnectionListener;
 import com.choosemuse.libmuse.MuseConnectionPacket;
 import com.choosemuse.libmuse.MuseDataListener;
 import com.choosemuse.libmuse.MuseDataPacket;
 import com.choosemuse.libmuse.MuseDataPacketType;
+import com.choosemuse.libmuse.MuseFileFactory;
+import com.choosemuse.libmuse.MuseFileReader;
 import com.choosemuse.libmuse.MuseFileWriter;
 import com.choosemuse.libmuse.MuseListener;
 import com.choosemuse.libmuse.MuseManagerAndroid;
+import com.choosemuse.libmuse.MuseVersion;
+import com.choosemuse.libmuse.Result;
+import com.choosemuse.libmuse.ResultLevel;
 
+import java.io.File;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
@@ -70,8 +87,8 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         public void run() {
             Looper.prepare();
             fileHandler.set(new Handler());
-//            final File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
-//            fileWriter.set(MuseFileFactory.getMuseFileWriter(new File(dir, "new_muse_file.muse")));
+            final File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+            fileWriter.set(MuseFileFactory.getMuseFileWriter(new File(dir, "new_muse_file.muse")));
             Looper.loop();
         }
     };
@@ -151,16 +168,47 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
 
         manager = MuseManagerAndroid.getInstance();
         manager.setContext(this);
+        fileThread.start();
+
+        Log.i(TAG, "libmuse version=" + LibmuseVersion.instance().getString());
+
+        // The ACCESS_COARSE_LOCATION permission is required to use the
+        // BlueTooth LE library and must be requested at runtime for Android 6.0+
+        // On an Android 6.0 device, the following code will display 2 dialogs,
+        // one to provide context and the second to request the permission.
+        // On an Android device running an earlier version, nothing is displayed
+        // as the permission is granted from the manifest.
+        if (ContextCompat.checkSelfPermission(this,
+                Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+        {
+            DialogInterface.OnClickListener buttonListener =
+                    new DialogInterface.OnClickListener() {
+                        public void onClick(DialogInterface dialog, int which){
+                            dialog.dismiss();
+                            ActivityCompat.requestPermissions(MainActivity.this,
+                                    new String[]{Manifest.permission.ACCESS_COARSE_LOCATION},
+                                    0);
+                        }
+                    };
+
+            AlertDialog introDialog = new AlertDialog.Builder(this)
+                    .setTitle("Muse needs your permission")
+                    .setMessage("Muse needs a few permissions to work properly. On the next screens, tap 'Allow' to proceed. If you deny, Muse will not work properly until you go into your Android settings and allow.")
+                    .setPositiveButton("I understand", buttonListener)
+                    .create();
+            introDialog.show();
+        }
 
         WeakReference<MainActivity> weakActivity =
                 new WeakReference<MainActivity>(this);
         connectionListener = new ConnectionListener(weakActivity);
         dataListener = new DataListener(weakActivity);
         manager.setMuseListener(new MuseL(weakActivity));
+
+        setContentView(R.layout.activity_main);
 
         startButton = (Button) findViewById(R.id.startButton);
         startButton.setOnClickListener(this);
@@ -202,6 +250,50 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 muse.registerDataListener(dataListener, MuseDataPacketType.QUANTIZATION);
                 muse.runAsynchronously();
             }
+        }
+    }
+
+    /*
+     * Simple example of getting data from the "*.muse" file
+     */
+    private void playMuseFile(String name) {
+        File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        File file = new File(dir, name);
+        final String tag = "Muse File Reader";
+        if (!file.exists()) {
+            Log.w(tag, "file doesn't exist");
+            return;
+        }
+        MuseFileReader fileReader = MuseFileFactory.getMuseFileReader(file);
+        Result res = fileReader.gotoNextMessage();
+        while (res.getLevel() == ResultLevel.R_INFO && !res.getInfo().contains("EOF")) {
+            MessageType type = fileReader.getMessageType();
+            int id = fileReader.getMessageId();
+            long timestamp = fileReader.getMessageTimestamp();
+            Log.i(tag, "type: " + type.toString() +
+                    " id: " + Integer.toString(id) +
+                    " timestamp: " + String.valueOf(timestamp));
+            switch(type) {
+                case EEG: case BATTERY: case ACCELEROMETER: case QUANTIZATION: case GYRO:
+                    MuseDataPacket packet = fileReader.getDataPacket();
+                    Log.i(tag, "data packet: " + packet.packetType().toString());
+                    break;
+                case VERSION:
+                    MuseVersion version = fileReader.getVersion();
+                    Log.i(tag, "version" + version.getFirmwareType());
+                    break;
+                case CONFIGURATION:
+                    MuseConfiguration config = fileReader.getConfiguration();
+                    Log.i(tag, "config" + config.getBluetoothMac());
+                    break;
+                case ANNOTATION:
+                    AnnotationData annotation = fileReader.getAnnotation();
+                    Log.i(tag, "annotation" + annotation.getData());
+                    break;
+                default:
+                    break;
+            }
+            res = fileReader.gotoNextMessage();
         }
     }
 

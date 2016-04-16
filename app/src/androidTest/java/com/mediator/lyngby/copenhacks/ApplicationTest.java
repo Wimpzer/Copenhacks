@@ -1,4 +1,4 @@
-package com.example.fires.copenhacks;
+package com.mediator.lyngby.copenhacks;
 
 import android.app.Application;
 import android.test.ApplicationTestCase;

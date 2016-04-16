@@ -1,6 +1,7 @@
 package com.mediator.lyngby.copenhacks;
 
 import android.os.Handler;
+import android.os.Looper;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
@@ -32,7 +33,6 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     private final String TAG = "MUSEAPP";
 
     private ArrayAdapter<String> spinnerAdapter;
-    private boolean dataTransmission = true;
     private MuseManagerAndroid manager = null;
     private Muse muse = null;
     private ConnectionListener connectionListener = null;
@@ -45,66 +45,6 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     private boolean eegStale = false;
 
     Button startButton;
-
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
-
-        manager = MuseManagerAndroid.getInstance();
-        manager.setContext(this);
-
-        WeakReference<MainActivity> weakActivity =
-                new WeakReference<MainActivity>(this);
-        connectionListener = new ConnectionListener(weakActivity);
-        dataListener = new DataListener(weakActivity);
-        manager.setMuseListener(new MuseL(weakActivity));
-
-        startButton = (Button) findViewById(R.id.startButton);
-        startButton.setOnClickListener(this);
-
-        spinnerAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item);
-        Spinner musesSpinner = (Spinner) findViewById(R.id.museSpinner);
-        musesSpinner.setAdapter(spinnerAdapter);
-
-        handler.post(tickUi);
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        manager.stopListening();
-    }
-
-    @Override
-    public void onClick(View v) {
-        Spinner musesSpinner = (Spinner) findViewById(R.id.museSpinner);
-        if (v.getId() == R.id.refreshButton) {
-            manager.stopListening();
-            manager.startListening();
-        } else if (v.getId() == R.id.startButton) {
-            if(startButton.getText().equals("Start")) {
-                startButton.setText("Restart");
-            }
-            manager.stopListening();
-            List<Muse> pairedMuses = manager.getMuses();
-            if (pairedMuses.size() < 1) {
-                Log.w("MUSEAPP", "There is nothing to connect to");
-            } else {
-                manager.stopListening();
-                muse = pairedMuses.get(musesSpinner.getSelectedItemPosition());
-                muse.unregisterAllListeners();
-                muse.registerConnectionListener(connectionListener);
-                muse.registerDataListener(dataListener, MuseDataPacketType.EEG);
-                muse.registerDataListener(dataListener, MuseDataPacketType.ALPHA_RELATIVE);
-                muse.registerDataListener(dataListener, MuseDataPacketType.ACCELEROMETER);
-                muse.registerDataListener(dataListener, MuseDataPacketType.BATTERY);
-                muse.registerDataListener(dataListener, MuseDataPacketType.DRL_REF);
-                muse.registerDataListener(dataListener, MuseDataPacketType.QUANTIZATION);
-                muse.runAsynchronously();
-            }
-        }
-    }
 
     private void getEegChannelValues(double[] buffer, MuseDataPacket p) {
         buffer[1] = p.getEegChannelValue(Eeg.EEG2);
@@ -124,6 +64,26 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
     private final AtomicReference<MuseFileWriter> fileWriter = new AtomicReference<>();
     private final AtomicReference<Handler> fileHandler = new AtomicReference<>();
+
+    private final Thread fileThread = new Thread() {
+        @Override
+        public void run() {
+            Looper.prepare();
+            fileHandler.set(new Handler());
+//            final File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+//            fileWriter.set(MuseFileFactory.getMuseFileWriter(new File(dir, "new_muse_file.muse")));
+            Looper.loop();
+        }
+    };
+
+    static {
+        // Try to load our own all-in-one JNI lib. If it fails, rely on libmuse
+        // to load libmuse_android.so for us.
+        try {
+            System.loadLibrary("TestLibMuseAndroid");
+        } catch (UnsatisfiedLinkError e) {
+        }
+    }
 
     public void receiveMuseConnectionPacket(final MuseConnectionPacket p) {
         final ConnectionState current = p.getCurrentConnectionState();
@@ -178,7 +138,6 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         final ArrayList<Muse> list = manager.getMuses();
         spinnerAdapter.clear();
         for (Muse m : list) {
-            Log.d(TAG, "museListChanged: " + m.toString());
             spinnerAdapter.add(m.getName().concat(m.getMacAddress()));
         }
     }
@@ -186,6 +145,63 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     public MainActivity() {
         for (int i = 0; i < eegBuffer.length; ++i) {
             eegBuffer[i] = 0.0;
+        }
+    }
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        manager = MuseManagerAndroid.getInstance();
+        manager.setContext(this);
+
+        WeakReference<MainActivity> weakActivity =
+                new WeakReference<MainActivity>(this);
+        connectionListener = new ConnectionListener(weakActivity);
+        dataListener = new DataListener(weakActivity);
+        manager.setMuseListener(new MuseL(weakActivity));
+
+        startButton = (Button) findViewById(R.id.startButton);
+        startButton.setOnClickListener(this);
+
+        spinnerAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item);
+        Spinner musesSpinner = (Spinner) findViewById(R.id.museSpinner);
+        musesSpinner.setAdapter(spinnerAdapter);
+
+        handler.post(tickUi);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        manager.stopListening();
+    }
+
+    @Override
+    public void onClick(View v) {
+        Spinner musesSpinner = (Spinner) findViewById(R.id.museSpinner);
+        if (v.getId() == R.id.refreshButton) {
+            manager.stopListening();
+            manager.startListening();
+        } else if (v.getId() == R.id.startButton) {
+            manager.stopListening();
+            List<Muse> pairedMuses = manager.getMuses();
+            if (pairedMuses.size() < 1 ||
+                    musesSpinner.getAdapter().getCount() < 1) {
+                Log.w("MUSEAPP", "There is nothing to connect to");
+            } else {
+                muse = pairedMuses.get(musesSpinner.getSelectedItemPosition());
+                muse.unregisterAllListeners();
+                muse.registerConnectionListener(connectionListener);
+                muse.registerDataListener(dataListener, MuseDataPacketType.EEG);
+                muse.registerDataListener(dataListener, MuseDataPacketType.ALPHA_RELATIVE);
+                muse.registerDataListener(dataListener, MuseDataPacketType.ACCELEROMETER);
+                muse.registerDataListener(dataListener, MuseDataPacketType.BATTERY);
+                muse.registerDataListener(dataListener, MuseDataPacketType.DRL_REF);
+                muse.registerDataListener(dataListener, MuseDataPacketType.QUANTIZATION);
+                muse.runAsynchronously();
+            }
         }
     }
 
@@ -226,7 +242,6 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         final WeakReference<MainActivity> activityRef;
 
         MuseL(final WeakReference<MainActivity> activityRef) {
-            Log.d("MUSEAPP", "MuseL: " + activityRef.toString());
             this.activityRef = activityRef;
         }
 

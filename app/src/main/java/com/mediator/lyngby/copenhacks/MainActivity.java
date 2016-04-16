@@ -1,6 +1,7 @@
 package com.mediator.lyngby.copenhacks;
 
 import android.Manifest;
+import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.pm.PackageManager;
@@ -9,7 +10,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
-import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
@@ -18,6 +18,7 @@ import android.widget.Button;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import com.choosemuse.libmuse.Accelerometer;
 import com.choosemuse.libmuse.AnnotationData;
 import com.choosemuse.libmuse.ConnectionState;
 import com.choosemuse.libmuse.Eeg;
@@ -46,7 +47,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
-public class MainActivity extends AppCompatActivity implements View.OnClickListener {
+public class MainActivity extends Activity implements View.OnClickListener {
     private final String TAG = "MUSEAPP";
 
     private ArrayAdapter<String> spinnerAdapter;
@@ -60,20 +61,45 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     // values for EEG and EEG-derived packets.
     private final double[] eegBuffer = new double[6];
     private boolean eegStale = false;
+    private final double[] alphaBuffer = new double[6];
+    private boolean alphaStale = false;
+    private final double[] accelBuffer = new double[3];
+    private boolean accelStale = false;
 
-    Button startButton;
-
+    // helper methods to get different packet values
     private void getEegChannelValues(double[] buffer, MuseDataPacket p) {
+        buffer[0] = p.getEegChannelValue(Eeg.EEG1);
         buffer[1] = p.getEegChannelValue(Eeg.EEG2);
+        buffer[2] = p.getEegChannelValue(Eeg.EEG3);
+        buffer[3] = p.getEegChannelValue(Eeg.EEG4);
+        buffer[4] = p.getEegChannelValue(Eeg.AUX_LEFT);
+        buffer[5] = p.getEegChannelValue(Eeg.AUX_RIGHT);
+    }
+
+    private void getAccelValues(MuseDataPacket p) {
+        accelBuffer[0] = p.getAccelerometerValue(Accelerometer.FORWARD_BACKWARD);
+        accelBuffer[1] = p.getAccelerometerValue(Accelerometer.UP_DOWN);
+        accelBuffer[2] = p.getAccelerometerValue(Accelerometer.LEFT_RIGHT);
     }
 
     private final Handler handler = new Handler();
 
+    // We update the UI from this Runnable instead of in packet handlers
+    // because packets come in at high frequency -- 220Hz or more for raw EEG
+    // -- and it only makes sense to update the UI at about 60fps. The update
+    // functions do some string allocation, so this reduces our memory
+    // footprint and makes GC pauses less frequent/noticeable.
     private final Runnable tickUi = new Runnable() {
         @Override
         public void run() {
             if (eegStale) {
                 updateEeg();
+            }
+            if (accelStale) {
+                updateAccel();
+            }
+            if (alphaStale) {
+                updateAlpha();
             }
             handler.postDelayed(tickUi, 1000 / 60);
         }
@@ -118,8 +144,17 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 }
             }, 20);
         }
+        handler.post(new Runnable() {
+            @Override public void run() {
+                if (current == ConnectionState.CONNECTED) {
+                    final MuseVersion museVersion = muse.getMuseVersion();
+                    final String version = museVersion.getFirmwareType().
+                            concat(" - ").concat(museVersion.getFirmwareVersion()).
+                            concat(" - ").concat(Integer.toString(museVersion.getProtocolVersion()));
+                }
+            }
+        });
     }
-
 
     public void receiveMuseDataPacket(final MuseDataPacket p) {
         Handler h = fileHandler.get();
@@ -138,14 +173,33 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 getEegChannelValues(eegBuffer,p);
                 eegStale = true;
                 break;
+            case ACCELEROMETER:
+                assert(accelBuffer.length >= n);
+                getAccelValues(p);
+                accelStale = true;
+                break;
+            case ALPHA_RELATIVE:
+                assert(alphaBuffer.length >= n);
+                getEegChannelValues(alphaBuffer,p);
+                alphaStale = true;
+                break;
             default:
                 break;
         }
     }
 
+    private void updateAccel() {
+    }
+
     private void updateEeg() {
-        TextView betaWaveTextView = (TextView)findViewById(R.id.betaWaveTextView);
-        betaWaveTextView.setText(String.format("%6.2f", eegBuffer[1]));
+        TextView fp1 = (TextView)findViewById(R.id.betaWaveTextView);
+        double betaWave = eegBuffer[1];
+        fp1.setText(String.format("%6.2f", betaWave));
+        MathClass mathClass = new MathClass();
+        mathClass.getMood(betaWave);
+    }
+
+    private void updateAlpha() {
     }
 
     public void receiveMuseArtifactPacket(final MuseArtifactPacket p) {
@@ -162,6 +216,10 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     public MainActivity() {
         for (int i = 0; i < eegBuffer.length; ++i) {
             eegBuffer[i] = 0.0;
+            alphaBuffer[i] = 0.0;
+        }
+        for (int i = 0; i < accelBuffer.length; ++i) {
+            accelBuffer[i] = 0.0;
         }
     }
 
@@ -169,8 +227,11 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // XX this must come before other libmuse API calls; it loads the
+        // library.
         manager = MuseManagerAndroid.getInstance();
         manager.setContext(this);
+
         fileThread.start();
 
         Log.i(TAG, "libmuse version=" + LibmuseVersion.instance().getString());
@@ -195,9 +256,9 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                     };
 
             AlertDialog introDialog = new AlertDialog.Builder(this)
-                    .setTitle("Muse needs your permission")
-                    .setMessage("Muse needs a few permissions to work properly. On the next screens, tap 'Allow' to proceed. If you deny, Muse will not work properly until you go into your Android settings and allow.")
-                    .setPositiveButton("I understand", buttonListener)
+                    .setTitle("Muse Needs Your Permission")
+                    .setMessage("Muse needs a few permissions to work properly. On the next screens, tap \"Allow\" to proceed. If you deny, Muse will not work properly until you go into your Android settings and allow.")
+                    .setPositiveButton("I Understand", buttonListener)
                     .create();
             introDialog.show();
         }
@@ -209,9 +270,10 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         manager.setMuseListener(new MuseL(weakActivity));
 
         setContentView(R.layout.activity_main);
-
-        startButton = (Button) findViewById(R.id.startButton);
-        startButton.setOnClickListener(this);
+        Button refreshButton = (Button) findViewById(R.id.refreshButton);
+        refreshButton.setOnClickListener(this);
+        Button connectButton = (Button) findViewById(R.id.startButton);
+        connectButton.setOnClickListener(this);
 
         spinnerAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item);
         Spinner musesSpinner = (Spinner) findViewById(R.id.museSpinner);
@@ -220,11 +282,11 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         handler.post(tickUi);
     }
 
-    @Override
     protected void onPause() {
         super.onPause();
         manager.stopListening();
     }
+
 
     @Override
     public void onClick(View v) {
@@ -297,7 +359,9 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         }
     }
 
+
     // Listener translators follow.
+
     class ConnectionListener extends MuseConnectionListener {
         final WeakReference<MainActivity> activityRef;
 

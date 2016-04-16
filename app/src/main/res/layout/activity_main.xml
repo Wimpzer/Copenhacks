@@ -54,8 +54,7 @@
                 android:layout_weight="1"
                 android:gravity="center"
                 android:id="@+id/betaWaveTextView"
-                android:textSize="48dp"
-                android:text="56"/>
+                android:textSize="48dp"/>
         </LinearLayout>
     </LinearLayout>
 

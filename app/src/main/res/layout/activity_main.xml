@@ -76,6 +76,6 @@
             android:gravity="center"
             android:id="@+id/moodTextView"
             android:textSize="48dp"
-            android:text="HAPPY"/>
+            android:text="MOOD"/>
     </LinearLayout>
 </LinearLayout>

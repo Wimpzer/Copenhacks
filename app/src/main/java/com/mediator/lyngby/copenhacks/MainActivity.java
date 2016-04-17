@@ -65,6 +65,8 @@ public class MainActivity extends Activity implements View.OnClickListener {
     // values for EEG and EEG-derived packets.
     private final double[] eegBuffer = new double[6];
     private boolean eegStale = false;
+    private final double[] betaBuffer = new double[6];
+    private boolean betaStale = false;
     private final double[] alphaBuffer = new double[6];
     private boolean alphaStale = false;
     private final double[] accelBuffer = new double[3];
@@ -104,6 +106,9 @@ public class MainActivity extends Activity implements View.OnClickListener {
             }
             if (alphaStale) {
                 updateAlpha();
+            }
+            if (betaStale) {
+                updateBeta();
             }
             handler.postDelayed(tickUi, 1000 / 60);
         }
@@ -177,6 +182,11 @@ public class MainActivity extends Activity implements View.OnClickListener {
                 getEegChannelValues(eegBuffer,p);
                 eegStale = true;
                 break;
+            case BETA_ABSOLUTE:
+                assert(betaBuffer.length >= n);
+                getEegChannelValues(betaBuffer, p);
+                betaStale = true;
+                break;
             case ACCELEROMETER:
                 assert(accelBuffer.length >= n);
                 getAccelValues(p);
@@ -196,41 +206,80 @@ public class MainActivity extends Activity implements View.OnClickListener {
     }
 
     private void updateEeg() {
+    }
+
+    private void updateBeta() {
         TextView fp1 = (TextView)findViewById(R.id.betaWaveTextView);
-        double betaWave = eegBuffer[1];
-        fp1.setText(String.format("%6.2f", betaWave));
-        setAverageBetaWave(betaWave);
+        double betaWave = setAverageBetaBuffer();
+        double betaWavePow = Math.pow(10, betaWave);
+        setAverageBetaWave(betaWavePow);
+        fp1.setText(String.format("%6.2f", mc.averageBetaWave));
         setMood();
+    }
+
+    private double setAverageBetaBuffer() {
+        double sum = 0;
+        if(betaBuffer.length > 0) {
+            for (Double mark : betaBuffer) {
+                sum += mark;
+            }
+            return (sum / betaBuffer.length);
+        }
+        return sum;
     }
 
     Firebase myFirebaseRef;
     moodContainer mc;
+    ArrayList<Double> betaWaves;
 
     private void setAverageBetaWave(double betaWave) {
-        myFirebaseRef.child("betaWave").setValue(betaWave);
+        betaWaves.add(betaWave);
 
-
-
+        double sum = 0;
+        if(!betaWaves.isEmpty()) {
+            for (Double mark : betaWaves) {
+                sum += mark;
+            }
+            mc.setAverageBetaWave(sum / betaWaves.size());
+        }
     }
 
     private void setMood() {
         String mood = null;
 
-        TextView moodTextView = (TextView) findViewById(R.id.moodTextView);
 //        getSentimentalScore();
+        double betaWaveThreshold = 0;
 
-        if(mc.getAverageBetaWave() > 0) {
+        if(mc.getAverageBetaWave() > betaWaveThreshold) {
             if(mc.getSentimentalScore() <= 0.25) {
                 mood = "Angry";
-            }else if(0.25 < mc.getSentimentalScore() || mc.getSentimentalScore() <= 0.5) {
-                mood = "Frustreted";
-            }else if(0.5 < mc.getSentimentalScore() || mc.getSentimentalScore() <= 0.6) {
+            }else if(0.25 < mc.getSentimentalScore() && mc.getSentimentalScore() <= 0.5) {
+                mood = "Frustrated";
+            }else if(0.5 < mc.getSentimentalScore() && mc.getSentimentalScore() <= 0.6) {
                 mood = "Normal";
             }else if(0.6 < mc.getSentimentalScore()) {
                 mood = "Happy";
             }
+            mc.setMood(mood);
+            TextView moodTextView = (TextView) findViewById(R.id.moodTextView);
+            moodTextView.setText(mood);
+            myFirebaseRef.child("mood").setValue(mood);
+        }else if(mc.getAverageBetaWave() < betaWaveThreshold && mc.getSentimentalScore() <= 0.5) {
+            if (mc.getSentimentalScore() <= 0.25) {
+                mood = "Semi-Angry";
+            } else if (0.25 < mc.getSentimentalScore() && mc.getSentimentalScore() <= 0.5) {
+                mood = "A little frustrated";
+            }
+            setMood(mood);
+        }else if(mc.getAverageBetaWave() < betaWaveThreshold && mc.getSentimentalScore() > 0.5) {
+            mood = "Happy";
+            setMood(mood);
         }
+    }
+
+    private void setMood(String mood) {
         mc.setMood(mood);
+        TextView moodTextView = (TextView) findViewById(R.id.moodTextView);
         moodTextView.setText(mood);
         myFirebaseRef.child("mood").setValue(mood);
     }
@@ -269,6 +318,7 @@ public class MainActivity extends Activity implements View.OnClickListener {
         for (int i = 0; i < eegBuffer.length; ++i) {
             eegBuffer[i] = 0.0;
             alphaBuffer[i] = 0.0;
+            betaBuffer[i] = 0.0;
         }
         for (int i = 0; i < accelBuffer.length; ++i) {
             accelBuffer[i] = 0.0;
@@ -331,6 +381,7 @@ public class MainActivity extends Activity implements View.OnClickListener {
         Spinner musesSpinner = (Spinner) findViewById(R.id.museSpinner);
         musesSpinner.setAdapter(spinnerAdapter);
 
+        betaWaves = new ArrayList<>();
         getSentimentalScore();
 
         handler.post(tickUi);
@@ -339,6 +390,7 @@ public class MainActivity extends Activity implements View.OnClickListener {
     protected void onPause() {
         super.onPause();
         manager.stopListening();
+        Firebase.goOffline();
     }
 
 
@@ -359,6 +411,7 @@ public class MainActivity extends Activity implements View.OnClickListener {
                 muse.unregisterAllListeners();
                 muse.registerConnectionListener(connectionListener);
                 muse.registerDataListener(dataListener, MuseDataPacketType.EEG);
+                muse.registerDataListener(dataListener, MuseDataPacketType.BETA_ABSOLUTE);
                 muse.registerDataListener(dataListener, MuseDataPacketType.ALPHA_RELATIVE);
                 muse.registerDataListener(dataListener, MuseDataPacketType.ACCELEROMETER);
                 muse.registerDataListener(dataListener, MuseDataPacketType.BATTERY);

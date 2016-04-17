@@ -40,6 +40,10 @@ import com.choosemuse.libmuse.MuseManagerAndroid;
 import com.choosemuse.libmuse.MuseVersion;
 import com.choosemuse.libmuse.Result;
 import com.choosemuse.libmuse.ResultLevel;
+import com.firebase.client.DataSnapshot;
+import com.firebase.client.Firebase;
+import com.firebase.client.FirebaseError;
+import com.firebase.client.ValueEventListener;
 
 import java.io.File;
 import java.lang.ref.WeakReference;
@@ -195,8 +199,56 @@ public class MainActivity extends Activity implements View.OnClickListener {
         TextView fp1 = (TextView)findViewById(R.id.betaWaveTextView);
         double betaWave = eegBuffer[1];
         fp1.setText(String.format("%6.2f", betaWave));
-        MathClass mathClass = new MathClass();
-        mathClass.getMood(betaWave);
+        setAverageBetaWave(betaWave);
+        setMood();
+    }
+
+    Firebase myFirebaseRef;
+    moodContainer mc;
+
+    private void setAverageBetaWave(double betaWave) {
+        myFirebaseRef.child("betaWave").setValue(betaWave);
+
+
+
+    }
+
+    private void setMood() {
+        String mood = null;
+
+        TextView moodTextView = (TextView) findViewById(R.id.moodTextView);
+//        getSentimentalScore();
+
+        if(mc.getAverageBetaWave() > 0) {
+            if(mc.getSentimentalScore() <= 0.25) {
+                mood = "Angry";
+            }else if(0.25 < mc.getSentimentalScore() || mc.getSentimentalScore() <= 0.5) {
+                mood = "Frustreted";
+            }else if(0.5 < mc.getSentimentalScore() || mc.getSentimentalScore() <= 0.6) {
+                mood = "Normal";
+            }else if(0.6 < mc.getSentimentalScore()) {
+                mood = "Happy";
+            }
+        }
+        mc.setMood(mood);
+        moodTextView.setText(mood);
+        myFirebaseRef.child("mood").setValue(mood);
+    }
+
+    private void getSentimentalScore() {
+        Firebase.setAndroidContext(this);
+        myFirebaseRef = new Firebase("https://mediatorbot.firebaseio.com/");
+        myFirebaseRef.child("sentimentalScore").addValueEventListener(new ValueEventListener() {
+            @Override
+            public void onDataChange(DataSnapshot dataSnapshot) {
+                mc = new moodContainer();
+                mc.setSentimentalScore((Double) dataSnapshot.getValue());
+            }
+
+            @Override
+            public void onCancelled(FirebaseError firebaseError) {
+            }
+        });
     }
 
     private void updateAlpha() {
@@ -278,6 +330,8 @@ public class MainActivity extends Activity implements View.OnClickListener {
         spinnerAdapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item);
         Spinner musesSpinner = (Spinner) findViewById(R.id.museSpinner);
         musesSpinner.setAdapter(spinnerAdapter);
+
+        getSentimentalScore();
 
         handler.post(tickUi);
     }
